@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Slack Audit Console</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    .spinner {
+      border: 3px solid rgba(99,102,241,.2);
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      width: 18px; height: 18px;
+      animation: spin .7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn .3s ease; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  </style>
+</head>
+<body class="h-full bg-slate-950 text-slate-100 font-sans">
+
+<!-- ═══════════════════  ONBOARDING OVERLAY  ══════════════════════════════ -->
+<div id="onboarding" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/95 backdrop-blur hidden">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-8 w-full max-w-md shadow-2xl fade-in">
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-xl">⚡</div>
+      <div>
+        <h1 class="text-lg font-semibold">Slack Audit Console</h1>
+        <p class="text-xs text-slate-400">Configuración inicial</p>
+      </div>
+    </div>
+    <p class="text-sm text-slate-400 mb-5">
+      Ingresa tu <strong class="text-slate-200">Slack Bot Token</strong> para comenzar.
+      El token se almacenará localmente en <code class="bg-slate-800 px-1 rounded text-indigo-300">.env</code> y
+      no se enviará a ningún servidor externo.
+    </p>
+    <form id="token-form" class="space-y-4">
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Bot Token</label>
+        <input id="token-input" type="password" placeholder="xoxb-..."
+          class="w-full bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono" />
+      </div>
+      <div id="token-error" class="text-red-400 text-xs hidden"></div>
+      <button type="submit"
+        class="w-full bg-indigo-600 hover:bg-indigo-500 transition-colors rounded-lg py-2.5 text-sm font-medium flex items-center justify-center gap-2">
+        <span id="token-btn-text">Guardar y continuar</span>
+        <span id="token-spinner" class="spinner hidden"></span>
+      </button>
+    </form>
+    <p class="text-xs text-slate-500 mt-4">
+      Scopes requeridos:
+      <code class="text-indigo-400">admin:apps:read</code>,
+      <code class="text-indigo-400">audit:read</code>
+      (para Enterprise Grid) o mínimo <code class="text-indigo-400">channels:read</code>.
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════  MAIN LAYOUT  ════════════════════════════════════ -->
+<div id="app" class="min-h-screen flex flex-col hidden">
+
+  <!-- Top bar -->
+  <header class="bg-slate-900 border-b border-slate-800 px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-base">⚡</div>
+      <span class="font-semibold text-base tracking-tight">Slack Audit Console</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-xs text-slate-400">
+        Última sincronización: <span id="last-sync" class="text-slate-300">—</span>
+      </span>
+      <button id="refresh-btn" onclick="doRefresh()"
+        class="bg-indigo-600 hover:bg-indigo-500 transition-colors rounded-lg px-4 py-1.5 text-sm font-medium flex items-center gap-2">
+        <span id="refresh-icon">↻</span>
+        <span id="refresh-spinner" class="spinner hidden"></span>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- Sidebar — app selector -->
+    <aside class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col">
+      <div class="p-4 border-b border-slate-800">
+        <p class="text-xs text-slate-400 uppercase tracking-widest mb-3">Aplicaciones</p>
+        <!-- Select-all master checkbox -->
+        <label class="flex items-center gap-2 cursor-pointer group mb-3">
+          <input type="checkbox" id="select-all-cb"
+            onchange="selectAllApps(this.checked)"
+            class="accent-indigo-500 w-3.5 h-3.5 flex-shrink-0" />
+          <span class="text-xs text-slate-200 font-medium group-hover:text-white transition-colors">
+            Seleccionar todas
+          </span>
+        </label>
+        <div class="border-t border-slate-700 mb-3"></div>
+        <button onclick="loadApps()"
+          class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1">
+          <span id="apps-spinner" class="spinner hidden" style="width:12px;height:12px;border-width:2px"></span>
+          ↺ Redescubrir apps
+        </button>
+      </div>
+      <div id="app-list" class="flex-1 overflow-y-auto p-4 space-y-1.5 text-sm">
+        <p class="text-slate-500 text-xs">Cargando…</p>
+      </div>
+      <div class="p-3 border-t border-slate-800 text-center">
+        <span id="sel-count" class="text-xs text-slate-500"></span>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="flex-1 overflow-y-auto p-6 space-y-6">
+
+      <!-- Filters -->
+      <div class="flex flex-wrap items-center gap-3">
+        <div class="flex rounded-lg overflow-hidden border border-slate-700 text-sm">
+          <button class="period-btn px-3 py-1.5 bg-indigo-600 text-white transition-colors" data-period="today">Hoy</button>
+          <button class="period-btn px-3 py-1.5 bg-slate-800 hover:bg-slate-700 transition-colors" data-period="7d">7 días</button>
+          <button class="period-btn px-3 py-1.5 bg-slate-800 hover:bg-slate-700 transition-colors" data-period="30d">30 días</button>
+          <button class="period-btn px-3 py-1.5 bg-slate-800 hover:bg-slate-700 transition-colors" data-period="all">Todo</button>
+        </div>
+        <span id="filter-badge" class="hidden text-xs bg-indigo-900/60 border border-indigo-700 text-indigo-300 rounded-lg px-3 py-1.5"></span>
+      </div>
+
+      <!-- Metric cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 fade-in">
+          <p class="text-xs text-slate-400 uppercase tracking-widest mb-1">Total API Requests</p>
+          <p id="metric-total" class="text-3xl font-bold text-indigo-400">—</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 fade-in">
+          <p class="text-xs text-slate-400 uppercase tracking-widest mb-1">Tasa de éxito</p>
+          <p id="metric-success" class="text-3xl font-bold text-emerald-400">—</p>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 fade-in">
+          <p class="text-xs text-slate-400 uppercase tracking-widest mb-1">App más activa</p>
+          <p id="metric-top" class="text-xl font-semibold text-amber-300 truncate">—</p>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <p class="text-sm font-medium text-slate-300 mb-4">Evolución de API Requests</p>
+          <div class="relative h-56">
+            <canvas id="timeline-chart"></canvas>
+          </div>
+        </div>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <p class="text-sm font-medium text-slate-300 mb-4">Distribución por App</p>
+          <div class="relative h-56 flex items-center justify-center">
+            <canvas id="donut-chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent calls table -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+          <p class="text-sm font-medium text-slate-300">Últimas llamadas registradas</p>
+          <span id="table-count" class="text-xs text-slate-500"></span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-slate-400 border-b border-slate-800">
+                <th class="text-left px-5 py-2 font-medium">Timestamp</th>
+                <th class="text-left px-5 py-2 font-medium">App</th>
+                <th class="text-left px-5 py-2 font-medium">Endpoint / Acción</th>
+                <th class="text-left px-5 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody id="calls-table" class="divide-y divide-slate-800">
+              <tr><td colspan="4" class="px-5 py-6 text-center text-slate-500">Sin datos. Presiona Refresh.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- ═══════════════════  TOAST  ═══════════════════════════════════════════ -->
+<div id="toast" class="fixed bottom-6 right-6 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm shadow-2xl hidden fade-in max-w-xs"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────
+let state = {
+  period: 'today',
+  apps: [],        // [{id,name,description}]
+  selected: new Set(),
+};
+
+let timelineChart = null;
+let donutChart    = null;
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+(async () => {
+  const res  = await api('/api/config/status');
+  if (!res.configured) {
+    show('onboarding');
+  } else {
+    show('app');
+    await Promise.all([loadApps(), loadDashboard()]);
+  }
+})();
+
+// ── Onboarding ────────────────────────────────────────────────────────────
+document.getElementById('token-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const token = document.getElementById('token-input').value.trim();
+  if (!token) return;
+
+  setBusy('token-btn-text', 'token-spinner', true);
+  const errEl = document.getElementById('token-error');
+  errEl.classList.add('hidden');
+
+  try {
+    const res = await api('/api/config/token', 'POST', { token });
+    toast(`Conectado como ${res.user} en ${res.team} ✓`, 'success');
+    show('app');
+    await Promise.all([loadApps(), loadDashboard()]);
+  } catch (err) {
+    errEl.textContent = err.message || 'Error al validar el token';
+    errEl.classList.remove('hidden');
+  } finally {
+    setBusy('token-btn-text', 'token-spinner', false);
+  }
+});
+
+// ── App list ──────────────────────────────────────────────────────────────
+async function loadApps() {
+  const spinner = document.getElementById('apps-spinner');
+  spinner.classList.remove('hidden');
+  try {
+    const res = await api('/api/apps');
+    state.apps = res.apps || [];
+    state.selected = new Set(state.apps.map(a => a.id));
+    renderAppList();
+    updateSidebarState();
+  } catch (err) {
+    toast('Error al cargar apps: ' + err.message, 'error');
+  } finally {
+    spinner.classList.add('hidden');
+  }
+}
+
+function renderAppList() {
+  const el = document.getElementById('app-list');
+  if (!state.apps.length) {
+    el.innerHTML = '<p class="text-slate-500 text-xs">No se encontraron apps.</p>';
+    return;
+  }
+  el.innerHTML = state.apps.map(a => `
+    <label class="flex items-center gap-2 cursor-pointer group py-0.5">
+      <input type="checkbox" data-id="${a.id}" ${state.selected.has(a.id) ? 'checked' : ''}
+        class="app-cb accent-indigo-500 w-3.5 h-3.5 flex-shrink-0" />
+      <span class="text-slate-300 group-hover:text-white transition-colors truncate text-xs leading-tight"
+            title="${a.name}">${a.name}</span>
+    </label>
+  `).join('');
+
+  // Attach listeners directly to each checkbox (no inline onchange)
+  el.querySelectorAll('.app-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.selected.add(cb.dataset.id);
+      else            state.selected.delete(cb.dataset.id);
+      updateSidebarState();
+      loadDashboard();
+    });
+  });
+}
+
+function updateSidebarState() {
+  const total = state.apps.length;
+  const sel   = state.selected.size;
+
+  // Master checkbox state
+  const masterCb = document.getElementById('select-all-cb');
+  if (masterCb) {
+    masterCb.checked       = sel > 0 && sel === total;
+    masterCb.indeterminate = sel > 0 && sel < total;
+  }
+
+  // Counter at the bottom
+  const counter = document.getElementById('sel-count');
+  if (counter) counter.textContent = `${sel} de ${total} seleccionadas`;
+
+  // Filter badge
+  const badge = document.getElementById('filter-badge');
+  if (!badge) return;
+  if (sel === 0 || sel === total) {
+    badge.classList.add('hidden');
+  } else if (sel === 1) {
+    const name = state.apps.find(a => state.selected.has(a.id))?.name || '';
+    badge.textContent = `Filtrando: ${name}`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.textContent = `Filtrando: ${sel} de ${total} apps`;
+    badge.classList.remove('hidden');
+  }
+}
+
+function selectAllApps(checked) {
+  state.selected = checked ? new Set(state.apps.map(a => a.id)) : new Set();
+  // Sync individual checkboxes
+  document.querySelectorAll('.app-cb').forEach(cb => {
+    cb.checked = checked;
+  });
+  updateSidebarState();
+  loadDashboard();
+}
+
+// ── Period buttons ─────────────────────────────────────────────────────────
+document.querySelectorAll('.period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.period-btn').forEach(b => {
+      b.classList.replace('bg-indigo-600', 'bg-slate-800');
+      b.classList.remove('text-white');
+    });
+    btn.classList.replace('bg-slate-800', 'bg-indigo-600');
+    btn.classList.add('text-white');
+    state.period = btn.dataset.period;
+    loadDashboard();
+  });
+});
+
+
+// ── Refresh ────────────────────────────────────────────────────────────────
+async function doRefresh() {
+  setBusy('refresh-icon', 'refresh-spinner', true);
+  document.getElementById('refresh-btn').disabled = true;
+  try {
+    // Refresh always fetches the full available history ('all').
+    // The display period filter is independent — it only controls what's shown.
+    const res = await api('/api/refresh', 'POST', {
+      app_ids: state.selected.size ? [...state.selected] : null,
+      period: 'all',
+    });
+    toast(`Sincronizado: ${res.inserted} nuevos registros de ${res.fetched} eventos`, 'success');
+    // Switch to 30d after refresh so imported historical data is visible
+    if (res.inserted > 0 || res.fetched > 0) {
+      document.querySelectorAll('.period-btn').forEach(b => {
+        b.classList.remove('bg-indigo-600', 'text-white');
+        b.classList.add('bg-slate-800');
+      });
+      const btn30d = document.querySelector('.period-btn[data-period="30d"]');
+      if (btn30d) { btn30d.classList.add('bg-indigo-600', 'text-white'); btn30d.classList.remove('bg-slate-800'); }
+      state.period = '30d';
+    }
+    await loadDashboard();
+  } catch (err) {
+    toast('Error en Refresh: ' + err.message, 'error');
+  } finally {
+    setBusy('refresh-icon', 'refresh-spinner', false);
+    document.getElementById('refresh-btn').disabled = false;
+  }
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  const p     = state.period;
+  const total = state.apps.length;
+  const sel   = state.selected.size;
+
+  // Nothing selected → render empty state immediately, skip API calls
+  if (sel === 0) {
+    renderMetrics({ total: 0, success_rate: 0, top_app: '—' });
+    renderTimeline([]);
+    renderDonut([]);
+    renderTable([]);
+    document.getElementById('table-count').textContent = '0 registros';
+    return;
+  }
+
+  // Subset selected → pass IDs. All selected → no param (faster, no WHERE clause).
+  const idsParam = sel < total
+    ? '&app_ids=' + encodeURIComponent([...state.selected].join(','))
+    : '';
+
+  const qs = () => `?period=${p}${idsParam}`;
+
+  const [metrics, timeline, dist, calls] = await Promise.all([
+    api('/api/metrics' + qs()),
+    api('/api/timeline' + qs()),
+    api('/api/distribution' + qs()),
+    api('/api/calls' + qs() + '&limit=100'),
+  ]);
+
+  renderMetrics(metrics);
+  renderTimeline(timeline.data);
+  renderDonut(dist.data);
+  renderTable(calls.data);
+
+  if (metrics.last_sync?.synced_at) {
+    const d = new Date(metrics.last_sync.synced_at + 'Z');
+    document.getElementById('last-sync').textContent = d.toLocaleString('es-AR');
+  }
+}
+
+function renderMetrics(m) {
+  document.getElementById('metric-total').textContent   = m.total.toLocaleString('es-AR');
+  document.getElementById('metric-success').textContent = m.success_rate + '%';
+  document.getElementById('metric-top').textContent     = m.top_app || '—';
+}
+
+function renderTimeline(data) {
+  const labels = data.map(d => d.date);
+  const values = data.map(d => d.count);
+  const ctx = document.getElementById('timeline-chart').getContext('2d');
+  if (timelineChart) timelineChart.destroy();
+  timelineChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'API Requests',
+        data: values,
+        backgroundColor: 'rgba(99,102,241,0.6)',
+        borderColor: 'rgb(99,102,241)',
+        borderWidth: 1,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: '#1e293b' } },
+      },
+    },
+  });
+}
+
+const PALETTE = ['#6366f1','#22d3ee','#f59e0b','#10b981','#f43f5e','#8b5cf6','#3b82f6','#84cc16'];
+
+function renderDonut(data) {
+  const labels = data.map(d => d.app);
+  const values = data.map(d => d.count);
+  const ctx = document.getElementById('donut-chart').getContext('2d');
+  if (donutChart) donutChart.destroy();
+
+  if (!data.length) {
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    return;
+  }
+
+  donutChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: PALETTE.slice(0, labels.length),
+        borderColor: '#0f172a',
+        borderWidth: 2,
+        hoverOffset: 6,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: '65%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: '#94a3b8', font: { size: 10 }, boxWidth: 10, padding: 8 },
+        },
+      },
+    },
+  });
+}
+
+function renderTable(rows) {
+  const tbody = document.getElementById('calls-table');
+  document.getElementById('table-count').textContent = rows.length + ' registros';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="px-5 py-6 text-center text-slate-500">Sin datos en este período.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const statusClass = r.status?.startsWith('2') ? 'text-emerald-400' : 'text-red-400';
+    const d = new Date(r.ts);
+    const ts = isNaN(d) ? r.ts : d.toLocaleString('es-AR');
+    return `<tr class="hover:bg-slate-800/50 transition-colors">
+      <td class="px-5 py-2 text-slate-400 whitespace-nowrap">${ts}</td>
+      <td class="px-5 py-2 text-slate-200 truncate max-w-[120px]" title="${r.app_name}">${r.app_name}</td>
+      <td class="px-5 py-2 text-slate-400 font-mono truncate max-w-[200px]" title="${r.endpoint}">${r.endpoint}</td>
+      <td class="px-5 py-2 font-mono ${statusClass}">${r.status}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function show(id) {
+  ['onboarding', 'app'].forEach(i => {
+    const el = document.getElementById(i);
+    if (i === id) { el.classList.remove('hidden'); }
+    else          { el.classList.add('hidden'); }
+  });
+}
+
+function setBusy(textId, spinnerId, busy) {
+  document.getElementById(textId).style.opacity  = busy ? '0' : '1';
+  document.getElementById(spinnerId).classList[busy ? 'remove' : 'add']('hidden');
+}
+
+let toastTimer;
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `fixed bottom-6 right-6 rounded-xl px-4 py-3 text-sm shadow-2xl fade-in max-w-xs border ${
+    type === 'success' ? 'bg-emerald-900/80 border-emerald-700 text-emerald-200' :
+    type === 'error'   ? 'bg-red-900/80 border-red-700 text-red-200' :
+                         'bg-slate-800 border-slate-700 text-slate-200'
+  }`;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 4000);
+}
+</script>
+</body>
+</html>
