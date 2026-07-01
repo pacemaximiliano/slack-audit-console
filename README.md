@@ -1,6 +1,6 @@
 # ⚡ Slack Audit Console
 
-A local web application to monitor and visualize audit log events from Slack apps in **Enterprise Grid** workspaces, using a Pull model.
+A local web application to monitor and visualize audit log events from Slack apps in **Enterprise** workspaces, using a Pull model.
 
 ![Dashboard Preview](docs/screenshot.png)
 
